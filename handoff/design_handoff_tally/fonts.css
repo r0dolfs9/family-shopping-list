@@ -1,0 +1,62 @@
+/* HonestCost — Self-hosted brand fonts
+ * All three families are SIL Open Font License 1.1 (see fonts/*-OFL.txt).
+ * Imported from github.com/google/fonts (main branch, May 2026).
+ *
+ * Stack:
+ *   Inter Tight       — UI body & headings (variable, 100-900)
+ *   Barlow Condensed  — Display numerics, large hero numbers
+ *   DM Mono           — Mono numerics, labels, technical readouts
+ */
+
+@font-face {
+  font-family: "Inter Tight";
+  src: url("fonts/InterTight-VF.ttf") format("truetype-variations"),
+       url("fonts/InterTight-VF.ttf") format("truetype");
+  font-weight: 100 900;
+  font-style: normal;
+  font-display: swap;
+}
+
+@font-face {
+  font-family: "Barlow Condensed";
+  src: url("fonts/BarlowCondensed-Regular.ttf") format("truetype");
+  font-weight: 400;
+  font-style: normal;
+  font-display: swap;
+}
+@font-face {
+  font-family: "Barlow Condensed";
+  src: url("fonts/BarlowCondensed-Medium.ttf") format("truetype");
+  font-weight: 500;
+  font-style: normal;
+  font-display: swap;
+}
+@font-face {
+  font-family: "Barlow Condensed";
+  src: url("fonts/BarlowCondensed-SemiBold.ttf") format("truetype");
+  font-weight: 600;
+  font-style: normal;
+  font-display: swap;
+}
+@font-face {
+  font-family: "Barlow Condensed";
+  src: url("fonts/BarlowCondensed-Bold.ttf") format("truetype");
+  font-weight: 700;
+  font-style: normal;
+  font-display: swap;
+}
+
+@font-face {
+  font-family: "DM Mono";
+  src: url("fonts/DMMono-Regular.ttf") format("truetype");
+  font-weight: 400;
+  font-style: normal;
+  font-display: swap;
+}
+@font-face {
+  font-family: "DM Mono";
+  src: url("fonts/DMMono-Medium.ttf") format("truetype");
+  font-weight: 500;
+  font-style: normal;
+  font-display: swap;
+}
