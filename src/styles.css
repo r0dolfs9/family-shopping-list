@@ -144,6 +144,14 @@ button {
   background: #35a653;
 }
 
+.sync-pill.connecting span {
+  background: #d28a18;
+}
+
+.sync-pill.error span {
+  background: var(--danger);
+}
+
 .icon-btn,
 .delete {
   width: 36px;

@@ -1,5 +1,6 @@
 import { CATEGORIES, categoryByKey, formatMoney, groupItems, listSummary } from './core.js';
 import { createLocalStore } from './local-store.js';
+import { createSupabaseStore } from './supabase-store.js';
 import { appConfig } from './app-config.js';
 
 const seedItems = [
@@ -14,12 +15,14 @@ const members = [
   { id: 'family-2', name: 'Maja', initials: 'MA', color: '#4f8a4f' },
 ];
 
-const store = createLocalStore({ seedItems });
+let store = createLocalStore({ seedItems });
 const state = {
   items: store.getItems(),
   editingId: null,
   sheetOpen: false,
   settingsOpen: false,
+  syncStatus: isSupabaseConfigured() ? 'connecting' : 'local',
+  syncError: '',
   theme: localStorage.getItem('tally-theme') || 'light',
   density: localStorage.getItem('tally-density') || 'airy',
 };
@@ -27,12 +30,8 @@ const state = {
 document.documentElement.dataset.theme = state.theme;
 document.documentElement.dataset.density = state.density;
 
-store.subscribe((items) => {
-  state.items = items;
-  render();
-});
-
 render();
+initializeStore();
 
 function render() {
   const root = document.querySelector('#app');
@@ -44,8 +43,8 @@ function render() {
           ${members.map((member) => `<span class="avatar" style="--avatar:${member.color}">${member.initials}</span>`).join('')}
         </button>
         <div class="top-actions">
-          <span class="sync-pill ${isSupabaseConfigured() ? 'online' : 'local'}">
-            <span></span>${isSupabaseConfigured() ? 'Sinhronizets' : 'Lokals rezims'}
+          <span class="sync-pill ${state.syncStatus}">
+            <span></span>${syncLabel()}
           </span>
           <button class="icon-btn" data-action="settings" aria-label="Iestatijumi">⚙</button>
         </div>
@@ -71,6 +70,61 @@ function render() {
   `;
 
   bindEvents(root);
+}
+
+async function initializeStore() {
+  let unsubscribe = null;
+  const bindStore = (nextStore) => {
+    if (unsubscribe) unsubscribe();
+    store = nextStore;
+    state.items = store.getItems();
+    unsubscribe = store.subscribe((items) => {
+      state.items = items;
+      render();
+    });
+  };
+
+  bindStore(store);
+
+  if (!isSupabaseConfigured()) {
+    state.syncStatus = 'local';
+    render();
+    return;
+  }
+
+  try {
+    const supabaseStore = createSupabaseStore({
+      url: appConfig.supabase.url,
+      anonKey: appConfig.supabase.anonKey,
+      familyId: appConfig.supabase.familyId,
+      memberId: appConfig.currentMember.id,
+    });
+    bindStore(supabaseStore);
+    await supabaseStore.ready();
+    state.syncStatus = 'online';
+    state.syncError = '';
+  } catch (error) {
+    console.error(error);
+    state.syncStatus = 'error';
+    state.syncError = error?.message || 'unknown error';
+    bindStore(createLocalStore({ seedItems }));
+  }
+
+  render();
+}
+
+function syncLabel() {
+  if (state.syncStatus === 'online') return 'Sinhronizets';
+  if (state.syncStatus === 'connecting') return 'Savienojas';
+  if (state.syncStatus === 'error') return 'Sync kluda';
+  return 'Lokals rezims';
+}
+
+function syncDescription() {
+  if (state.syncStatus === 'online') return 'Savienots ar Supabase. Izmainas tiek sutitas uz kopigo datubazi.';
+  if (state.syncStatus === 'connecting') return 'Savienojas ar Supabase real-time datubazi.';
+  if (state.syncStatus === 'error') return `Supabase savienojums neizdevas: ${escapeHtml(state.syncError)}. Sobrid darbojas lokali saja ierice.`;
+  return 'Sobrid darbojas lokali saja ierice. Kad bus Supabase projekts, aizpildi src/app-config.js un palaid SQL no supabase/schema.sql.';
 }
 
 function renderGroups() {
@@ -158,9 +212,7 @@ function renderSettings() {
       </header>
       <section>
         <h3>Sinhronizacija</h3>
-        <p class="muted">${isSupabaseConfigured()
-          ? 'Supabase konfiguracija ir aizpildita. Nakama versija var slegties pie realtime datiem.'
-          : 'Sobrid darbojas lokali saja ierice. Kad bus Supabase projekts, aizpildi src/app-config.js un palaid SQL no supabase/schema.sql.'}</p>
+        <p class="muted">${syncDescription()}</p>
       </section>
       <section>
         <h3>Izskats</h3>
@@ -190,10 +242,10 @@ function bindEvents(root) {
       const row = element.closest('[data-id]');
       if (action === 'new') openSheet();
       if (action === 'edit') openSheet(row.dataset.id);
-      if (action === 'toggle') store.toggleItem(row.dataset.id, { memberId: appConfig.currentMember.id });
-      if (action === 'delete') store.deleteItem(row.dataset.id);
+      if (action === 'toggle') runStoreAction(() => store.toggleItem(row.dataset.id, { memberId: appConfig.currentMember.id }));
+      if (action === 'delete') runStoreAction(() => store.deleteItem(row.dataset.id));
       if (action === 'delete-current' && state.editingId) {
-        store.deleteItem(state.editingId);
+        runStoreAction(() => store.deleteItem(state.editingId));
         closeSheet();
       }
       if (action === 'close-sheet') closeSheet();
@@ -233,10 +285,22 @@ function bindEvents(root) {
         category: data.category,
         priceEstimate: parsePrice(data.priceEstimate),
       };
-      if (state.editingId) store.updateItem(state.editingId, input);
-      else store.addItem(input, { memberId: appConfig.currentMember.id });
+      if (state.editingId) runStoreAction(() => store.updateItem(state.editingId, input));
+      else runStoreAction(() => store.addItem(input, { memberId: appConfig.currentMember.id }));
       closeSheet();
     });
+  }
+}
+
+async function runStoreAction(action) {
+  try {
+    await action();
+    if (state.syncStatus === 'error' && isSupabaseConfigured()) state.syncStatus = 'online';
+  } catch (error) {
+    console.error(error);
+    state.syncStatus = 'error';
+    state.syncError = error?.message || 'unknown error';
+    render();
   }
 }
 
