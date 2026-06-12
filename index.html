@@ -1,14 +1,33 @@
 <!doctype html>
-<html lang="lv">
+<html lang="lv" data-theme="auto">
   <head>
     <meta charset="utf-8">
     <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
-    <meta name="theme-color" content="#f7f3ea">
-    <title>Tally · Iepirkumu saraksts</title>
+    <title>Tally — ģimenes iepirkumu saraksts</title>
+    <meta name="theme-color" content="#f7f3ea" media="(prefers-color-scheme: light)">
+    <meta name="theme-color" content="#14151a" media="(prefers-color-scheme: dark)">
+    <link rel="manifest" href="./manifest.webmanifest">
+    <link rel="icon" href="./icons/icon.svg" type="image/svg+xml">
+    <link rel="apple-touch-icon" href="./icons/icon-192.png">
     <link rel="stylesheet" href="./src/styles.css">
+    <script>
+      // Apply saved theme before paint to avoid flash.
+      try {
+        var t = localStorage.getItem('tally-v2-theme');
+        if (t === 'light' || t === 'dark' || t === 'auto') document.documentElement.dataset.theme = t;
+      } catch (e) {}
+    </script>
   </head>
   <body>
-    <main id="app" class="app-shell" aria-live="polite"></main>
+    <div id="app" data-screen-label="Saraksts"></div>
+    <noscript><p style="padding:24px">Šai lietotnei ir nepieciešams JavaScript.</p></noscript>
     <script type="module" src="./src/app.js"></script>
+    <script>
+      if ('serviceWorker' in navigator && location.protocol !== 'file:') {
+        addEventListener('load', function () {
+          navigator.serviceWorker.register('./sw.js').catch(function (e) { console.warn('SW reģistrācija neizdevās', e); });
+        });
+      }
+    </script>
   </body>
 </html>

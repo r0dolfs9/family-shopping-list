@@ -1,0 +1,51 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>Tally V2 — unit tests</title>
+    <style>
+      body { font: 14px/1.5 ui-monospace, monospace; background: #14151a; color: #e8e4da; padding: 24px; }
+      .pass { color: #7fbe88; }
+      .fail { color: #e07a70; }
+      h1 { font-size: 16px; }
+      #summary { font-weight: 700; margin-top: 12px; }
+    </style>
+  </head>
+  <body>
+    <h1>Tally V2 unit tests (browser run)</h1>
+    <div id="results"></div>
+    <p id="summary">running…</p>
+    <script type="module">
+      import { registerSpecs } from './specs.js';
+      const results = document.getElementById('results');
+      const summary = document.getElementById('summary');
+      let pass = 0, fail = 0;
+      const cases = [];
+      const test = (name, fn) => cases.push([name, fn]);
+      const assert = {
+        equal(a, b, msg) { if (!Object.is(a, b)) throw new Error(msg || `expected ${JSON.stringify(b)}, got ${JSON.stringify(a)}`); },
+        ok(v, msg) { if (!v) throw new Error(msg || `expected truthy, got ${JSON.stringify(v)}`); },
+        deepEqual(a, b, msg) { const sa = JSON.stringify(a), sb = JSON.stringify(b); if (sa !== sb) throw new Error(msg || `expected ${sb}, got ${sa}`); },
+      };
+      registerSpecs({ test, assert });
+      for (const [name, fn] of cases) {
+        const line = document.createElement('div');
+        try {
+          fn();
+          pass += 1;
+          line.className = 'pass';
+          line.textContent = `✓ ${name}`;
+        } catch (error) {
+          fail += 1;
+          line.className = 'fail';
+          line.textContent = `✗ ${name} — ${error.message}`;
+        }
+        results.append(line);
+      }
+      summary.textContent = `${pass} passed, ${fail} failed, ${cases.length} total`;
+      summary.className = fail ? 'fail' : 'pass';
+      window.__testResults = { pass, fail, total: cases.length };
+    </script>
+  </body>
+</html>

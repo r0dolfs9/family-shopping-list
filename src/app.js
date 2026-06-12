@@ -1,341 +1,201 @@
-import { CATEGORIES, categoryByKey, formatMoney, groupItems, listSummary } from './core.js';
-import { createLocalStore } from './local-store.js';
-import { createSupabaseStore } from './supabase-store.js';
-import { appConfig } from './app-config.js';
+// app.js — view layer. Renders from sync state; targeted updates, no full-page
+// innerHTML rebuilds. Sheets/screens are independent overlays that survive renders.
 
-const seedItems = [
-  { id: 'seed-1', name: 'Piens', qty: '2', category: 'dairy', priceEstimate: 2.5, addedBy: 'me' },
-  { id: 'seed-2', name: 'Banani', qty: '1 kg', category: 'fruit', priceEstimate: 1.6, addedBy: 'me' },
-  { id: 'seed-3', name: 'Maize', qty: '1', category: 'bakery', priceEstimate: 1.1, addedBy: 'me' },
-];
+import { categoryByKey, groupItems, listSummary, formatMoney, nameKey } from './core.js';
+import { createSync } from './sync.js';
+import { el, icons, priceLabel, STATUS_LABELS } from './ui-helpers.js';
+import { openSheet } from './sheet.js';
+import { openSettings, openSetup, getTheme, setTheme } from './settings.js';
 
-const members = [
-  appConfig.currentMember,
-  { id: 'family-1', name: 'Gimene', initials: 'GI', color: '#d28a18' },
-  { id: 'family-2', name: 'Maja', initials: 'MA', color: '#4f8a4f' },
-];
+const sync = createSync();
+const app = document.getElementById('app');
 
-let store = createLocalStore({ seedItems });
-const state = {
-  items: store.getItems(),
-  editingId: null,
-  sheetOpen: false,
-  settingsOpen: false,
-  syncStatus: isSupabaseConfigured() ? 'connecting' : 'local',
-  syncError: '',
-  theme: localStorage.getItem('tally-theme') || 'light',
-  density: localStorage.getItem('tally-density') || 'airy',
-};
+setTheme(getTheme());
 
-document.documentElement.dataset.theme = state.theme;
-document.documentElement.dataset.density = state.density;
+// ---------- Static frame (built once) ----------
+const syncPill = el('button', { class: 'sync-pill', type: 'button', 'aria-live': 'polite', onclick: onSyncPillTap },
+  el('span', { class: 'dot', 'aria-hidden': 'true' }), el('span', { class: 'sync-text' }, '…'));
+const familyNameEl = el('p', { class: 'family-name' }, '\u00a0');
+const summaryEl = el('div', { class: 'summary' });
+const listEl = el('main', { class: 'list', 'aria-label': 'Iepirkumu saraksts' });
+const errorBanner = el('div', { class: 'banner', hidden: true, role: 'alert' });
 
-render();
-initializeStore();
+const quickInput = el('input', { type: 'text', placeholder: 'Pievienot produktu…', maxlength: '80', autocomplete: 'off', 'aria-label': 'Produkta nosaukums' });
+const quickForm = el('form', { onsubmit: (event) => {
+  event.preventDefault();
+  const name = quickInput.value.trim();
+  if (!name) return; // empty / already-submitted (input clears synchronously → double-tap is a no-op)
+  quickInput.value = '';
+  handleDuplicateAwareAdd(name);
+} },
+  quickInput,
+  el('button', { class: 'detail-btn', type: 'button', 'aria-label': 'Pievienot ar detaļām', html: icons.sliders, onclick: () => {
+    openSheet({ mode: 'add', prefillName: quickInput.value.trim(), sync, onSubmit: (fields) => { sync.addItem(fields); quickInput.value = ''; } });
+  } }),
+  el('button', { class: 'submit-btn', type: 'submit', 'aria-label': 'Pievienot', html: icons.plus }),
+);
 
-function render() {
-  const root = document.querySelector('#app');
-  const summary = listSummary(state.items);
-  root.innerHTML = `
-    <section class="phone">
-      <header class="topbar">
-        <button class="avatar-stack" data-action="family" aria-label="Atvert gimeni">
-          ${members.map((member) => `<span class="avatar" style="--avatar:${member.color}">${member.initials}</span>`).join('')}
-        </button>
-        <div class="top-actions">
-          <span class="sync-pill ${state.syncStatus}">
-            <span></span>${syncLabel()}
-          </span>
-          <button class="icon-btn" data-action="settings" aria-label="Iestatijumi">⚙</button>
-        </div>
-      </header>
+app.append(
+  el('div', { class: 'topbar' },
+    el('span', { class: 'brand' }, 'Tally'),
+    el('div', { class: 'top-actions' },
+      syncPill,
+      el('button', { class: 'icon-btn', 'aria-label': 'Iestatījumi', html: icons.gear, onclick: () => openSettings({ sync }) }),
+    ),
+  ),
+  el('div', { class: 'hero' },
+    familyNameEl,
+    el('h1', {}, 'Iepirkumu saraksts'),
+    summaryEl,
+  ),
+  errorBanner,
+  listEl,
+  el('div', { class: 'addbar' }, quickForm),
+);
 
-      <section class="hero">
-        <p>${escapeHtml(appConfig.familyName)}</p>
-        <h1>Iepirkumu saraksts</h1>
-        <div>${summary.activeCount} preces · vel ~<strong>${formatMoney(summary.totalEstimate)}</strong></div>
-      </section>
-
-      <section class="list" aria-label="Iepirkumu saraksts">
-        ${renderGroups()}
-      </section>
-
-      <footer class="addbar">
-        <button class="add-field" data-action="new">Pievienot sarakstam...</button>
-        <button class="add-btn" data-action="new" aria-label="Pievienot">+</button>
-      </footer>
-    </section>
-    ${state.sheetOpen ? renderSheet() : ''}
-    ${state.settingsOpen ? renderSettings() : ''}
-  `;
-
-  bindEvents(root);
+// ---------- Duplicate-aware add ----------
+function handleDuplicateAwareAdd(name) {
+  const key = nameKey(name);
+  const existing = sync.getItems().find((item) => item.status === 'active' && nameKey(item.name) === key);
+  if (existing) {
+    showSnackbar(`“${existing.name}” jau ir sarakstā.`, 'Pievienot vēlreiz', () => sync.addItem({ name }));
+    return;
+  }
+  sync.addItem({ name });
 }
 
-async function initializeStore() {
-  let unsubscribe = null;
-  const bindStore = (nextStore) => {
-    if (unsubscribe) unsubscribe();
-    store = nextStore;
-    state.items = store.getItems();
-    unsubscribe = store.subscribe((items) => {
-      state.items = items;
-      render();
-    });
-  };
+// ---------- Snackbar (undo etc.) ----------
+let snackbar = null;
+let snackbarTimer = null;
+function showSnackbar(message, actionLabel, onAction) {
+  snackbar?.remove();
+  clearTimeout(snackbarTimer);
+  const node = el('div', { class: 'snackbar', role: 'status' },
+    el('span', {}, message),
+    actionLabel && el('button', { type: 'button', onclick: () => { node.remove(); clearTimeout(snackbarTimer); onAction?.(); } }, actionLabel),
+  );
+  snackbar = node;
+  document.body.append(node);
+  snackbarTimer = setTimeout(() => node.remove(), 6000);
+}
 
-  bindStore(store);
+function onSyncPillTap() {
+  const { status, detail } = sync.getStatus();
+  if (status === 'error') sync.retryFailed();
+  else if (detail) showSnackbar(detail, null, null);
+}
 
-  if (!isSupabaseConfigured()) {
-    state.syncStatus = 'local';
-    render();
+// ---------- Rendering ----------
+function render() {
+  const items = sync.getItems();
+  const { status, detail, pending, failed } = sync.getStatus();
+
+  // Sync pill
+  syncPill.dataset.status = status;
+  syncPill.querySelector('.sync-text').textContent = STATUS_LABELS[status] ?? status;
+
+  // Error banner
+  if (status === 'error') {
+    errorBanner.hidden = false;
+    errorBanner.replaceChildren(
+      el('span', {}, detail || 'Dažas izmaiņas nav nosūtītas.'),
+      el('button', { type: 'button', onclick: () => sync.retryFailed() }, 'Mēģināt vēlreiz'),
+    );
+  } else {
+    errorBanner.hidden = true;
+  }
+
+  // Family name
+  const family = sync.getFamily();
+  familyNameEl.textContent = family ? family.name : (sync.isRemote() ? '\u00a0' : 'Šajā ierīcē');
+
+  // Summary
+  const summary = listSummary(items);
+  const summaryChildren = [
+    el('span', {}, el('strong', {}, String(summary.activeCount)), ' produkti'),
+    summary.pricedCount > 0 ? el('span', {}, (summary.hasEstimates ? '~' : ''), el('strong', {}, formatMoney(summary.totalKnown))) : null,
+    summary.unpricedCount > 0 ? el('span', { class: 'unpriced' }, `${summary.unpricedCount} bez cenas`) : null,
+  ].filter(Boolean);
+  summaryEl.replaceChildren(...summaryChildren);
+
+  // List
+  const groups = groupItems(items);
+  if (!groups.length) {
+    listEl.replaceChildren(
+      el('div', { class: 'empty-state' },
+        el('h2', {}, 'Saraksts ir tukšs'),
+        el('p', {}, 'Pievieno pirmo produktu ar lauku zemāk — citi ģimenes locekļi to redzēs uzreiz.'),
+      ),
+    );
     return;
   }
 
-  try {
-    const supabaseStore = createSupabaseStore({
-      url: appConfig.supabase.url,
-      anonKey: appConfig.supabase.anonKey,
-      familyId: appConfig.supabase.familyId,
-      memberId: appConfig.currentMember.id,
-    });
-    bindStore(supabaseStore);
-    await supabaseStore.ready();
-    state.syncStatus = 'online';
-    state.syncError = '';
-  } catch (error) {
-    console.error(error);
-    state.syncStatus = 'error';
-    state.syncError = error?.message || 'unknown error';
-    bindStore(createLocalStore({ seedItems }));
-  }
-
-  render();
+  const now = Date.now();
+  listEl.replaceChildren(...groups.map((group) => {
+    const groupTotal = group.items.reduce((sum, item) => sum + (item.price ?? 0), 0);
+    const pricedAll = group.items.every((item) => item.price != null);
+    return el('section', { class: 'group', 'aria-label': group.label },
+      el('div', { class: 'group-head', style: `--dot:${group.hue}` },
+        el('span', { class: 'cat-dot', 'aria-hidden': 'true' }),
+        el('span', { class: 'cat-name' }, group.label),
+        el('span', { class: 'cat-count' }, String(group.items.length)),
+        groupTotal > 0 && el('span', { class: 'cat-total' }, (pricedAll ? '' : '≥') + formatMoney(groupTotal)),
+      ),
+      ...group.items.map((item) => renderRow(item, { pending: pending.has(item.id), failed: failed.has(item.id), now })),
+    );
+  }));
 }
 
-function syncLabel() {
-  if (state.syncStatus === 'online') return 'Sinhronizets';
-  if (state.syncStatus === 'connecting') return 'Savienojas';
-  if (state.syncStatus === 'error') return 'Sync kluda';
-  return 'Lokals rezims';
-}
-
-function syncDescription() {
-  if (state.syncStatus === 'online') return 'Savienots ar Supabase. Izmainas tiek sutitas uz kopigo datubazi.';
-  if (state.syncStatus === 'connecting') return 'Savienojas ar Supabase real-time datubazi.';
-  if (state.syncStatus === 'error') return `Supabase savienojums neizdevas: ${escapeHtml(state.syncError)}. Sobrid darbojas lokali saja ierice.`;
-  return 'Sobrid darbojas lokali saja ierice. Kad bus Supabase projekts, aizpildi src/app-config.js un palaid SQL no supabase/schema.sql.';
-}
-
-function renderGroups() {
-  const groups = groupItems(state.items);
-  if (!groups.length) {
-    return `<div class="empty-state"><h2>Saraksts tukss</h2><p>Pievieno pirmo preci, un ta paliks saglabata saja ierice.</p></div>`;
-  }
-
-  return groups.map((group) => {
-    const total = group.items.reduce((sum, item) => sum + Number(item.priceEstimate || 0), 0);
-    return `
-      <article class="group">
-        <header class="group-head">
-          <span class="dot" style="--dot:${group.hue}"></span>
-          <span>${group.label}</span>
-          <small>${group.items.length}</small>
-          <i></i>
-          <strong>${formatMoney(total)}</strong>
-        </header>
-        <div class="rows">
-          ${group.items.map(renderItem).join('')}
-        </div>
-      </article>
-    `;
-  }).join('');
-}
-
-function renderItem(item) {
-  const category = categoryByKey(item.category);
+function renderRow(item, { pending, failed, now }) {
+  const price = priceLabel(item, now);
   const bought = item.status === 'bought';
-  return `
-    <div class="row ${bought ? 'is-bought' : ''}" data-id="${item.id}">
-      <button class="check" data-action="toggle" aria-label="${bought ? 'Atlikt atpakal saraksta' : 'Atzimet ka nopirktu'}">
-        ${bought ? '✓' : ''}
-      </button>
-      <button class="row-main" data-action="edit">
-        <span class="name">${escapeHtml(item.name)}</span>
-        <span class="meta">
-          ${item.qty ? `<b>${escapeHtml(item.qty)}</b>` : ''}
-          ${item.note ? `<em>${escapeHtml(item.note)}</em>` : `<em>${bought ? 'groza' : category.label}</em>`}
-        </span>
-      </button>
-      <span class="price ${item.priceGuessed ? 'guess' : ''}">${item.priceGuessed ? '≈ ' : ''}${formatMoney(item.priceEstimate)}</span>
-      <button class="delete" data-action="delete" aria-label="Dzest">×</button>
-    </div>
-  `;
+  return el('div', { class: `row${bought ? ' is-bought' : ''}`, 'data-id': item.id },
+    el('button', { class: 'check', type: 'button', 'aria-label': bought ? `Atlikt atpakaļ: ${item.name}` : `Atzīmēt kā nopirktu: ${item.name}`, 'aria-pressed': bought ? 'true' : 'false', onclick: () => {
+      const next = sync.toggleItem(item.id);
+      if (next?.status === 'bought') showSnackbar(`“${item.name}” grozā.`, 'Atcelt', () => sync.toggleItem(item.id));
+    } },
+      el('span', { class: 'box', html: icons.check }),
+    ),
+    el('button', { class: 'row-main', type: 'button', onclick: () => openEdit(item.id) },
+      el('span', { class: 'name' }, item.name),
+      (item.qty || item.note || pending || failed) && el('span', { class: 'meta' },
+        item.qty && el('span', { class: 'qty' }, item.qty),
+        item.note && el('span', {}, item.note),
+        failed ? el('span', { class: 'failed-tag' }, 'nav nosūtīts') : pending && el('span', { class: 'pending-tag' }, 'gaida sinhronizāciju'),
+      ),
+    ),
+    el('div', { class: 'row-end' },
+      el('span', { class: `price ${price.cls}` }, price.text),
+      price.age && el('span', { class: 'price-age' }, price.age),
+    ),
+  );
 }
 
-function renderSheet() {
-  const item = state.editingId ? state.items.find((candidate) => candidate.id === state.editingId) : null;
-  const selected = item?.category || 'other';
-  return `
-    <div class="scrim" data-action="close-sheet"></div>
-    <form class="sheet" id="item-form">
-      <div class="grab"></div>
-      <input class="input-lg" name="name" value="${escapeAttribute(item?.name || '')}" placeholder="Ko vajag?" autocomplete="off" required autofocus>
-      <div class="chips">
-        ${CATEGORIES.map((category) => `
-          <label class="chip ${selected === category.key ? 'selected' : ''}" style="--chip:${category.hue}">
-            <input type="radio" name="category" value="${category.key}" ${selected === category.key ? 'checked' : ''}>
-            ${category.label}
-          </label>
-        `).join('')}
-      </div>
-      <div class="field-grid">
-        <label>Daudzums<input name="qty" value="${escapeAttribute(item?.qty || '')}" placeholder="1 gab"></label>
-        <label>Cena<input name="priceEstimate" value="${item && !item.priceGuessed ? item.priceEstimate : ''}" inputmode="decimal" placeholder="auto"></label>
-      </div>
-      <label class="note-label">Piezime<input name="note" value="${escapeAttribute(item?.note || '')}" placeholder="piem. bez cukura"></label>
-      <div class="sheet-actions">
-        ${item ? '<button type="button" class="ghost danger" data-action="delete-current">Dzest</button>' : '<span></span>'}
-        <button type="button" class="ghost" data-action="close-sheet">Atcelt</button>
-        <button class="primary" type="submit">${item ? 'Saglabat' : 'Pievienot'}</button>
-      </div>
-    </form>
-  `;
-}
-
-function renderSettings() {
-  return `
-    <div class="screen">
-      <header>
-        <button class="icon-btn" data-action="close-settings" aria-label="Atpakal">←</button>
-        <h2>Iestatijumi</h2>
-      </header>
-      <section>
-        <h3>Sinhronizacija</h3>
-        <p class="muted">${syncDescription()}</p>
-      </section>
-      <section>
-        <h3>Izskats</h3>
-        <div class="seg">
-          <button class="${state.theme === 'light' ? 'on' : ''}" data-action="theme" data-value="light">Gaiss</button>
-          <button class="${state.theme === 'dark' ? 'on' : ''}" data-action="theme" data-value="dark">Tumss</button>
-        </div>
-        <div class="seg">
-          <button class="${state.density === 'airy' ? 'on' : ''}" data-action="density" data-value="airy">Plass</button>
-          <button class="${state.density === 'compact' ? 'on' : ''}" data-action="density" data-value="compact">Kompakts</button>
-        </div>
-      </section>
-      <section>
-        <h3>Gimene</h3>
-        <div class="member-list">
-          ${members.map((member) => `<div><span class="avatar" style="--avatar:${member.color}">${member.initials}</span><strong>${member.name}</strong><small>gatavs testam</small></div>`).join('')}
-        </div>
-      </section>
-    </div>
-  `;
-}
-
-function bindEvents(root) {
-  root.querySelectorAll('[data-action]').forEach((element) => {
-    element.addEventListener('click', (event) => {
-      const action = element.dataset.action;
-      const row = element.closest('[data-id]');
-      if (action === 'new') openSheet();
-      if (action === 'edit') openSheet(row.dataset.id);
-      if (action === 'toggle') runStoreAction(() => store.toggleItem(row.dataset.id, { memberId: appConfig.currentMember.id }));
-      if (action === 'delete') runStoreAction(() => store.deleteItem(row.dataset.id));
-      if (action === 'delete-current' && state.editingId) {
-        runStoreAction(() => store.deleteItem(state.editingId));
-        closeSheet();
-      }
-      if (action === 'close-sheet') closeSheet();
-      if (action === 'settings' || action === 'family') {
-        state.settingsOpen = true;
-        render();
-      }
-      if (action === 'close-settings') {
-        state.settingsOpen = false;
-        render();
-      }
-      if (action === 'theme') {
-        state.theme = element.dataset.value;
-        localStorage.setItem('tally-theme', state.theme);
-        document.documentElement.dataset.theme = state.theme;
-        render();
-      }
-      if (action === 'density') {
-        state.density = element.dataset.value;
-        localStorage.setItem('tally-density', state.density);
-        document.documentElement.dataset.density = state.density;
-        render();
-      }
-    });
+function openEdit(id) {
+  const item = sync.getItem(id);
+  if (!item) return;
+  openSheet({
+    mode: 'edit', item, sync,
+    onSubmit: (fields) => {
+      const updates = { name: fields.name, qty: fields.qty, note: fields.note, category: fields.category };
+      if (fields.price !== undefined) updates.price = fields.price;
+      sync.updateItem(id, updates);
+    },
+    onDelete: () => {
+      const snapshot = sync.deleteItem(id);
+      if (snapshot) showSnackbar(`“${snapshot.name}” dzēsts.`, 'Atcelt', () => sync.restoreItem(snapshot));
+    },
   });
-
-  const form = root.querySelector('#item-form');
-  if (form) {
-    form.addEventListener('submit', (event) => {
-      event.preventDefault();
-      const data = Object.fromEntries(new FormData(form).entries());
-      if (!data.name.trim()) return;
-      const input = {
-        name: data.name,
-        qty: data.qty,
-        note: data.note,
-        category: data.category,
-        priceEstimate: parsePrice(data.priceEstimate),
-      };
-      if (state.editingId) runStoreAction(() => store.updateItem(state.editingId, input));
-      else runStoreAction(() => store.addItem(input, { memberId: appConfig.currentMember.id }));
-      closeSheet();
-    });
-  }
 }
 
-async function runStoreAction(action) {
-  try {
-    await action();
-    if (state.syncStatus === 'error' && isSupabaseConfigured()) state.syncStatus = 'online';
-  } catch (error) {
-    console.error(error);
-    state.syncStatus = 'error';
-    state.syncError = error?.message || 'unknown error';
-    render();
-  }
-}
+// ---------- Boot ----------
+sync.subscribe(render);
+render();
 
-function openSheet(id = null) {
-  state.editingId = id;
-  state.sheetOpen = true;
-  render();
-  requestAnimationFrame(() => document.querySelector('.input-lg')?.focus());
-}
-
-function closeSheet() {
-  state.editingId = null;
-  state.sheetOpen = false;
-  render();
-}
-
-function parsePrice(value) {
-  const trimmed = String(value || '').replace(',', '.').trim();
-  return trimmed ? Number(trimmed) : undefined;
-}
-
-function isSupabaseConfigured() {
-  return Boolean(appConfig.supabase.url && appConfig.supabase.anonKey && appConfig.supabase.familyId);
-}
-
-function escapeHtml(value) {
-  return String(value ?? '').replace(/[&<>"']/g, (char) => ({
-    '&': '&amp;',
-    '<': '&lt;',
-    '>': '&gt;',
-    '"': '&quot;',
-    "'": '&#039;',
-  })[char]);
-}
-
-function escapeAttribute(value) {
-  return escapeHtml(value).replace(/`/g, '&#096;');
+if (sync.isRemote()) {
+  sync.connect().then(() => {
+    if (sync.getStatus().status === 'setup') {
+      openSetup({ sync, onDone: render });
+    }
+  });
 }
