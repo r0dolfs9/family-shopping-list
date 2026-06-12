@@ -403,7 +403,8 @@ button:focus-visible, input:focus-visible, a:focus-visible {
   transition: transform .12s;
 }
 .addbar .submit-btn:active { transform: scale(.94); }
-.addbar .submit-btn svg, .addbar .detail-btn svg { width: 20px; height: 20px; }
+.addbar .submit-btn svg, .addbar .detail-btn svg { width: 20px; height: 20px; pointer-events: none; }
+.addbar .submit-btn, .addbar .detail-btn { cursor: pointer; }
 
 /* ---------- Sheet ---------- */
 .scrim {
